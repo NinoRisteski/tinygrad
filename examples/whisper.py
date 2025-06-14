@@ -269,34 +269,15 @@ def timestamp_filter(logits: np.ndarray, enc: Encoding):
 def timestamp_filter2(logits: np.ndarray, enc: Encoding, ctx: np.ndarray, sample_begin: int):
   timestamp_begin = enc._special_tokens["<|0.00|>"]
   for k in range(ctx.shape[0]):
-    sampled_tokens = ctx[k, sample_begin:]
-    seq = sampled_tokens.tolist()
-    timestamp_token = enc._special_tokens["<|0.00|>"]
-    last_was_timestamp = bool(seq and seq[-1] >= timestamp_token)
-    penultimate_was_timestamp = len(seq) < 2 or seq[-2] >= timestamp_token
-    if last_was_timestamp:
-      if penultimate_was_timestamp:  # has to be non-timestamp
-        logits[k, timestamp_begin :] = -np.inf
-      else:  # cannot be normal text tokens
-        logits[k, : enc._special_tokens["<|endoftext|>"]] = -np.inf
-    timestamps = sampled_tokens[sampled_tokens >= timestamp_begin]
-    if timestamps.size > 0:
-        # timestamps shouldn't decrease; forbid timestamp tokens smaller than the last
-        # also force each segment to have a nonzero length, to prevent infinite looping
-      if last_was_timestamp and not penultimate_was_timestamp:
-        timestamp_last = timestamps[-1]
-      else:
-        timestamp_last = timestamps[-1] + 1
-      logits[k, timestamp_begin : timestamp_last] = -np.inf
-
+    seq = ctx[k, sample_begin:].tolist()
+    last_was_timestamp = bool(seq and seq[-1] >= timestamp_begin)
+    penultimate_was_timestamp = len(seq) < 2 or seq[-2] >= timestamp_begin
+    if last_was_timestamp: logits[k, timestamp_begin:] if penultimate_was_timestamp else logits[k, :enc._special_tokens["<|endoftext|>"]] = -np.inf
+    timestamps = ctx[k, sample_begin:][ctx[k, sample_begin:] >= timestamp_begin]
+    if timestamps.size > 0: logits[k, timestamp_begin:timestamps[-1] + (0 if last_was_timestamp and not penultimate_was_timestamp else 1)] = -np.inf
   if ctx.shape[1] == sample_begin:
-      # suppress generating non-timestamp tokens at the beginning
-    logits[:, : timestamp_begin] = -np.inf
-
-    # apply the `max_initial_timestamp` option
-    max_initial_timestamp_index = 50
-    last_allowed = timestamp_begin + max_initial_timestamp_index
-    logits[:, last_allowed + 1 :] = -np.inf
+    logits[:, :timestamp_begin] = -np.inf
+    logits[:, timestamp_begin + 50 + 1:] = -np.inf  # max_initial_timestamp_index = 50
 
 def non_speech_filter(logits: np.ndarray):
   tokens = np.array([1, 2, 7, 8, 9, 10, 14, 25, 26, 27, 28, 29, 31, 58, 59, 60, 61, 62, 63, 90, 91, 92, 93, 357, 366, 438, 532, 685, 705, 796, 930, 1058, 1220, 1267, 1279, 1303, 1343, 1377, 1391, 1635, 1782, 1875, 2162, 2361, 2488, 3467, 4008, 4211, 4600, 4808, 5299, 5855, 6329, 7203, 9609, 9959, 10563, 10786, 11420, 11709, 11907, 13163, 13697, 13700, 14808, 15306, 16410, 16791, 17992, 19203, 19510, 20724, 22305, 22935, 27007, 30109, 30420, 33409, 34949, 40283, 40493, 40549, 47282, 49146, 50358, 50357, 50257, 50360, 50359, 50361])
@@ -386,19 +367,8 @@ def parse(timetoken: str): return float(timetoken[2:-2])
 def format_time(seconds: int): return str(datetime.timedelta(seconds=seconds))
 def segment_and_seek(tokens: list[int], enc: Encoding, timeoffset: int):
   timestamp_pos = [i for i, tok in enumerate(tokens) if tok > enc._special_tokens["<|notimestamps|>"]]
-  if len(timestamp_pos) < 2:
-    text = [tok for tok in tokens if tok < enc._special_tokens["<|notimestamps|>"]]
-    yield Segment(timeoffset, timeoffset + 30, enc.decode(text), text)
-  else:
-    total_timestamps = len(timestamp_pos)
-    for i in range(0, total_timestamps - total_timestamps % 2,2):
-      s = timestamp_pos[i]
-      e = timestamp_pos[i+1]
-      start_time = parse(enc.decode([tokens[s]])) + timeoffset
-      end_time = parse(enc.decode([tokens[e]])) + timeoffset
-      selected = tokens[s+1:e]
-      selected_with_time = tokens[s: e+1]
-      yield Segment(start_time, end_time, enc.decode(selected), selected_with_time)
+  if len(timestamp_pos) < 2: yield Segment(timeoffset, timeoffset + 30, enc.decode([t for t in tokens if t < enc._special_tokens["<|notimestamps|>"]]), [t for t in tokens if t < enc._special_tokens["<|notimestamps|>"]])
+  else: yield from (Segment(parse(enc.decode([tokens[s]])) + timeoffset, parse(enc.decode([tokens[e]])) + timeoffset, enc.decode(tokens[s+1:e]), tokens[s:e+1]) for s, e in zip(timestamp_pos[::2], timestamp_pos[1::2]))
 
 def get_start_tokens(enc: Encoding, is_multilingual: bool=False):
   start_tokens = [enc._special_tokens["<|startoftranscript|>"]]
