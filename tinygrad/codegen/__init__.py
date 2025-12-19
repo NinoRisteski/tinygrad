@@ -1,6 +1,6 @@
 from typing import cast
 import itertools
-from tinygrad.helpers import DEVECTORIZE, TRANSCENDENTAL, SPEC
+from tinygrad.helpers import DEVECTORIZE, TRANSCENDENTAL, SPEC, IMAGE
 from tinygrad.uop.ops import PatternMatcher, graph_rewrite, UOp, pm_lower_index_dtype, Ops, UPat
 from tinygrad.uop.spec import type_verify, program_spec, kernel_spec
 from tinygrad.renderer import Renderer
@@ -13,7 +13,10 @@ from tinygrad.uop.symbolic import sym, symbolic_simple, gep_pushing, symbolic, p
 from tinygrad.uop.decompositions import get_late_rewrite_patterns
 from tinygrad.codegen.late.expander import expander, pm_pre_expander, pm_group_for_reduce
 from tinygrad.codegen.late.devectorizer import load_store_folding, load_store_indexing, devectorize, pm_reduce, \
-  ReduceContext, correct_load_store, pm_render, pm_add_loads
+  ReduceContext, correct_load_store, pm_render, pm_add_loads, split_load_store
+
+pm_correct_load_store_no_image = PatternMatcher([
+  (UPat((Ops.LOAD, Ops.STORE), src=(UPat(Ops.INDEX, name="idx").cast(),), name="ls", allow_any_len=True),split_load_store),])
 from tinygrad.codegen.opt.postrange import apply_opts
 from tinygrad.codegen.simplify import pm_simplify_ranges, pm_flatten_range, pm_split_ranges, pm_load_collapse, pm_split_store
 from tinygrad.schedule.rangeify import pm_add_buffers_local, rangeify_codegen, pm_mops
@@ -75,9 +78,10 @@ def full_rewrite_to_sink(sink:UOp, ren:Renderer|None=None, optimize:bool=True) -
   sink = graph_rewrite(sink, pm_add_loads, name="** add loads (code)")
 
   # devectorize (TODO: does this need opts?)
-  if DEVECTORIZE >= 2: pm_devectorize = sym+load_store_folding+load_store_indexing
-  elif DEVECTORIZE: pm_devectorize = sym+devectorize+load_store_folding+correct_load_store+load_store_indexing
-  else: pm_devectorize = sym+load_store_folding+correct_load_store+load_store_indexing
+  pm_cls = correct_load_store if IMAGE.value else pm_correct_load_store_no_image
+  if DEVECTORIZE >= 2: pm_devectorize = sym+load_store_folding
+  elif DEVECTORIZE: pm_devectorize = sym+devectorize+load_store_folding+pm_cls
+  else: pm_devectorize = sym+load_store_folding+pm_cls
   sink = graph_rewrite(sink, pm_devectorize, ctx=ren, name="devectorize")
 
   # lower the index dtype to a concrete int
