@@ -297,6 +297,14 @@ class TestUopsObject(unittest.TestCase):
     for _ in range(10_000): a = a+a
     self.assertEqual(a.device, Device.DEFAULT)
 
+  def test_uop_del_duplicate_key(self):
+    u = UOp(Ops.CONST, dtypes.int, arg=10000001)
+    key = (u.op, u.dtype, u.src, u.arg, u.tag)
+    v = UOp.__new__(UOp)
+    UOp.__init__(v, *key)
+    del v
+    self.assertIs(UOp(*key), u)
+
 class TestUOpRender(unittest.TestCase):
   def test_render_vectorize_empty(self):
     u = UOp(Ops.STACK, dtype=dtypes.int.vec(0), src=())

@@ -133,8 +133,10 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
   arg:Any = None
   tag:Any = None
   def __del__(self):
-    if Ops is not None and self.op is Ops.BUFFER and (buffer:=buffers.get(self)) is not None: buffer.ref(-1)
-    try: del UOpMetaClass.ucache[(self.op, self.dtype, self.src, self.arg, self.tag)]
+    try:
+      if Ops is not None and self.op is Ops.BUFFER and (buffer:=buffers.get(self)) is not None: buffer.ref(-1)
+      key = (self.op, self.dtype, self.src, self.arg, self.tag)
+      if (wret:=UOpMetaClass.ucache.get(key)) is not None and wret() is self: del UOpMetaClass.ucache[key]
     except AttributeError: pass
   def __reduce__(self):
     args = [self.op, self.dtype, self.src, self.arg, self.tag, self.metadata]
