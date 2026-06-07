@@ -1,7 +1,7 @@
 from typing import Iterator
 import functools, itertools
 from dataclasses import dataclass, field, replace
-from tinygrad.dtype import dtypes, AddrSpace
+from tinygrad.dtype import dtypes, AddrSpace, Invalid
 from tinygrad.uop.ops import PatternMatcher, UPat, Ops, UOp, resolve, GroupOp, graph_rewrite, sint, AxisType, profile_matches
 from tinygrad.uop.ops import consumer_map_from_toposort, gate_kernel_sink
 from tinygrad.uop.symbolic import symbolic, pm_simplify_valid, pm_drop_and_clauses
@@ -83,7 +83,7 @@ def create_bufferize_and_index_based_on_ranges(ctx:IndexingContext, x:UOp):
 def convert_pad_to_where_to_keep_behavior_local(ctx:IndexingContext, x:UOp):
   if x not in ctx.range_map: return None
   valid: UOp = UOp.const(dtypes.bool, True).uprod([r.get_valid() for r in ctx.range_map[x][0]])
-  ret = valid.where(x.src[0], UOp.const(x.dtype, 0))
+  ret = valid.where(x.src[0], UOp.const(x.dtype, False if x.dtype is dtypes.bool else Invalid))
   ctx.range_map[ret] = ctx.range_map[x]
   return ret
 

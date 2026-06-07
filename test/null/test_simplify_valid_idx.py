@@ -527,6 +527,38 @@ class TestRangeShrink(unittest.TestCase):
       result = full_rewrite(sink)
     return [u for u in result.toposort() if u.op is Ops.RANGE]
 
+  def _pad_from_tensor(self, t) -> UOp:
+    pads = [u for u in t.uop.toposort() if u.op is Ops.PAD]
+    self.assertEqual(len(pads), 1)
+    return pads[0]
+
+  def test_rangeify_pad_data_uses_invalid(self):
+    from tinygrad import Tensor
+    from tinygrad.dtype import Invalid
+    from tinygrad.schedule.indexing import IndexingContext, convert_pad_to_where_to_keep_behavior_local
+    x = self._pad_from_tensor(Tensor.empty(4).pad((0, 2)))
+    r = Range(0, x.shape[0])
+    ctx = IndexingContext(range_map={x: (((r < 4).where(r, UOp.invalid()),), (r,))})
+    ret = convert_pad_to_where_to_keep_behavior_local(ctx, x)
+    self.assertIsNotNone(ret)
+    self.assertEqual(ret.op, Ops.WHERE)
+    self.assertIs(ret.src[2].arg, Invalid)
+
+  def test_rangeify_pad_bool_uses_false(self):
+    from tinygrad import Tensor
+    from tinygrad.schedule.indexing import IndexingContext, convert_pad_to_where_to_keep_behavior_local
+    x = self._pad_from_tensor(Tensor.empty(4, dtype=dtypes.bool).pad((0, 2)))
+    r = Range(0, x.shape[0])
+    ctx = IndexingContext(range_map={x: (((r < 4).where(r, UOp.invalid()),), (r,))})
+    ret = convert_pad_to_where_to_keep_behavior_local(ctx, x)
+    self.assertIsNotNone(ret)
+    self.assertEqual(ret.op, Ops.WHERE)
+    self.assertIs(ret.src[2].arg, False)
+
+  def test_tensor_pad_materializes_zeros(self):
+    from tinygrad import Tensor
+    self.assertEqual(Tensor.arange(4).pad((0, 2)).numpy().tolist(), [0, 1, 2, 3, 0, 0])
+
   def test_range_shrink_single_guard(self):
     # range 0..203 guarded by r < 4 everywhere -> shrink to 0..3
     r = Range(0, 204)

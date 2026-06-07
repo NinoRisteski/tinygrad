@@ -8,7 +8,7 @@ from tinygrad.uop.render import pyrender
 from tinygrad.uop.spec import type_verify, spec_tensor, spec_program
 from tinygrad.renderer import Renderer, Estimates
 from tinygrad.renderer.isa import ISARenderer, IselContext, PreRegAllocContext
-from tinygrad.dtype import dtypes, PtrDType, ImageDType
+from tinygrad.dtype import dtypes, PtrDType, ImageDType, Invalid
 
 # import all pattern matchers here
 from tinygrad.codegen.gpudims import pm_add_gpudims
@@ -42,6 +42,10 @@ pm_remove_vec_dtypes = PatternMatcher([
    lambda x: x.replace(dtype=x.dtype.base.scalar().base)),
 ])+pm_clean_up_group_sink
 
+pm_invalid_values_to_zero = PatternMatcher([
+  (UPat(Ops.CONST, arg=Invalid, name="x"),
+   lambda x: x.const_like(0) if x.dtype.scalar() is not dtypes.weakint else None),])
+
 def full_rewrite_to_sink(ast:UOp, ren:Renderer, optimize:bool=True) -> UOp:
   if VIZ: graph_rewrite(ast, PatternMatcher([]), name="View Base AST")
   if DEBUG >= 5: print(pyrender(ast))
@@ -69,6 +73,7 @@ def full_rewrite_to_sink(ast:UOp, ren:Renderer, optimize:bool=True) -> UOp:
 
   # ** expander (expand_rewrite) **
   sink = graph_rewrite(sink, sym+pm_move_where_on_load, name="postopt symbolic")
+  sink = graph_rewrite(sink, pm_invalid_values_to_zero, name="invalid values to zero")
 
   # expand
   sink = graph_rewrite(sink, sym+pm_pre_expander+pm_group_for_reduce+expander, name="expander")

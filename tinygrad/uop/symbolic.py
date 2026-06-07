@@ -76,7 +76,7 @@ propagate_invalid = PatternMatcher([
   (UPat.var("cond").where(invalid_pat, UPat.var("val")), lambda cond, i, val: cond.logical_not().where(val, i) if val.arg != Invalid else i),
   # lift Invalid out  # TODO: this `a is cond` is asymmetric to preserve the pattern
   (UPat.var("a").where(invalid_gate, UPat.var("c")), lambda cond,i,x,a,c:
-   (cond if a is cond else (a.logical_not()|cond)).where(a.where(x,c), i) if c.arg != Invalid else None),
+   a.where(x, i if c.arg == 0 else c) if a is cond else ((a.logical_not()|cond).where(a.where(x,c), i) if c.arg != Invalid else None)),
   (UPat.var("a").where(UPat.var("b"), invalid_gate), lambda cond,i,x,a,b: (a|cond).where(a.where(b, x), i) if b.arg != Invalid else None),
   (UPat(Ops.BITCAST, src=(invalid_pat,), name="bc"), lambda bc,i: i.cast(bc.dtype)),
   (UPat(Ops.BITCAST, src=(invalid_gate,), name="bc"), lambda bc,cond,x,i: cond.where(x.bitcast(bc.dtype), i.bitcast(bc.dtype))),
