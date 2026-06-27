@@ -223,9 +223,10 @@ def cleanup_dead_axes(b:UOp):
   new_rng = []
   hit = False
   reshape: list[sint] = []
-  for s,rng in zip(b.shape, b.src[1:]):
+  for rng in b.src[1:]:
     # skip for symbolic. TODO: fix this
     if rng.op is Ops.RANGE and rng.src[0].op is not Ops.CONST: return None
+    s = int(rng.vmax+1)
     # CONSTs are already dead axes
     if rng.op is Ops.CONST or (rng.op is Ops.RANGE and rng not in b.src[0].ranges):
       reshape.append(1)
@@ -234,6 +235,7 @@ def cleanup_dead_axes(b:UOp):
       reshape.append(s)
       new_rng.append(rng)
   if hit:
+    # b.shape is only used to restore the post-STAGE shape after dead axes are removed.
     return b.replace(src=b.src[0:1]+tuple(new_rng)).reshape(tuple(reshape)).expand(b.shape)
 
 def gate_substitute(ctx, b:UOp) -> None:
@@ -354,7 +356,9 @@ pm_remove_bufferize = PatternMatcher([
 
 def late_buffer_view(t:UOp, b:UOp):
   if not (isinstance(b.device, str) and b.device.startswith(("DISK", "TINYFS"))): return b
-  shape = b.shape
+  inner = t.src[0] if t.op is Ops.CONTIGUOUS and t.src[0].op is Ops.BITCAST else t
+  # DISK BITCAST(INDEX) has scalar shape, so the byte span comes from STAGE ranges instead of t.shape.
+  shape = tuple(int(r.vmax+1) for r in b.src[1:]) + (() if inner.op is Ops.BITCAST and inner.src[0].op is Ops.INDEX else t.shape)
   size = prod(shape)
 
   # walk up for the INDEX
