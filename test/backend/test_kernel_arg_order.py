@@ -1,6 +1,6 @@
 import unittest, itertools
 import numpy as np
-from tinygrad import Tensor, UOp, TinyJit, Variable
+from tinygrad import Tensor, UOp, TinyJit, Variable, Device
 from tinygrad.dtype import dtypes
 from tinygrad.uop.ops import KernelInfo
 from test.helpers import assert_jit_cache_len
@@ -48,6 +48,16 @@ class TestKernelArgOrder(unittest.TestCase):
   def test_rebind_values(self):
     for a, b in ((3, 5), (7, 1), (2, 9)):
       with self.subTest(a=a, b=b): np.testing.assert_equal(run("aoxby", a, b), expected(a, b))
+
+  @unittest.skipIf(Device.DEFAULT in {"PYTHON", "CL"}, "multi-device custom_kernel is broken here, also with only buffers")
+  def test_multi_device(self):
+    devs = (f"{Device.DEFAULT}:0", f"{Device.DEFAULT}:1")
+    def fxn(a:UOp, x:UOp, o:UOp) -> UOp:
+      r = UOp.range(o.shape[0], 0)
+      return o[r].store(x[r]*a).end(r).sink(arg=KernelInfo(name="args_multi_device"))
+    x, o = Tensor(np.arange(8, dtype=np.int32)).shard(devs, axis=0), Tensor.empty(8, dtype=dtypes.int).shard(devs, axis=0)
+    outs = UOp.custom_kernel(Variable("a", 0, 100, dtypes.int).bind(3), x.uop, o.uop, fxn=fxn)
+    np.testing.assert_equal(Tensor(outs[2]).numpy(), np.arange(8)*3)
 
   def test_jit(self):
     @TinyJit

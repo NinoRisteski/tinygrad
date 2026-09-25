@@ -111,7 +111,7 @@ def resolve_linear_call(linear_call:UOp, outer_binds:dict[str, UOp]|None=None):
   def apply_binds(si:UOp) -> UOp:
     if si.op is Ops.CALL and si.body.op is Ops.LINEAR: return resolve_linear_call(si, binds)
     subs = {v:binds[v.expr] for v in si.variables() if v.expr in binds}
-    # a kernel reads scalar args from var_vals at launch, a bound value in its args would be baked in (and stale on jit replay)
+    # kernels read scalars from var_vals, a bound value left in the args is baked in (stale on jit replay)
     srcs = tuple(s.src[0].replace(op=Ops.PARAM) if s.is_bound_var else s for s in si.src)
     return si.replace(src=tuple(s.substitute(subs, name="resolve scalar params") for s in srcs))
   return linear.replace(src=tuple(apply_binds(si) for si in linear.src))
