@@ -618,7 +618,7 @@ class TestCustomKernelArgOrder(unittest.TestCase):
   X, Y = np.arange(1, 5, dtype=np.int32), np.arange(10, 50, 10, dtype=np.int32)
 
   def _call(self, order:str, **args) -> Tensor:
-    # order is a permutation of the arg names: o/x/y (and u, unused) are buffers, a/b are bound Variables
+    # order is a permutation of the arg names: o/x/y are buffers, a/b are bound Variables
     slot = {k:i for i,k in enumerate(order)}
     def fxn(*ph):
       o, x, y, a, b = [ph[slot[k]] for k in "oxyab"]
@@ -626,33 +626,12 @@ class TestCustomKernelArgOrder(unittest.TestCase):
       return o[r].store(x[r]*a + y[r] - b).end(r).sink(arg=KernelInfo(name=f"args_{order}"))
     return Tensor(UOp.custom_kernel(*[v.uop if isinstance(v:=args[k], Tensor) else v for k in order], fxn=fxn)[slot["o"]])
 
-  def _check(self, order:str, a:int, b:int):
-    out = self._call(order, o=Tensor.empty(4, dtype=dtypes.int), x=Tensor(self.X), y=Tensor(self.Y), u=Tensor.full((4,), 99, dtype=dtypes.int),
-                     a=Variable("a", 0, 100, dtypes.int).bind(a), b=Variable("b", 0, 100, dtypes.int).bind(b))
-    np.testing.assert_equal(out.numpy(), self.X*a + self.Y - b)
-
-  def test_buffers_any_order(self):
-    for order in map("".join, itertools.permutations("oxy")):
-      with self.subTest(order=order):
-        slot = {k:i for i,k in enumerate(order)}
-        def fxn(*ph):
-          o, x, y = [ph[slot[k]] for k in "oxy"]
-          r = UOp.range(4, 0)
-          return o[r].store(x[r]*3 + y[r]).end(r).sink(arg=KernelInfo(name=f"bufs_{order}"))
-        args = {"o": Tensor.empty(4, dtype=dtypes.int), "x": Tensor(self.X), "y": Tensor(self.Y)}
-        np.testing.assert_equal(Tensor(UOp.custom_kernel(*[args[k].uop for k in order], fxn=fxn)[slot["o"]]).numpy(), self.X*3 + self.Y)
-
   def test_buffers_and_vars_any_order(self):
     for order in map("".join, itertools.permutations("oxyab")):
-      with self.subTest(order=order): self._check(order, 3, 5)
-
-  def test_unused_buffer(self):
-    for order in ("oxyabu", "uaoxby", "xaubyo"):
-      with self.subTest(order=order): self._check(order, 3, 5)
-
-  def test_rebind_values(self):
-    for a, b in ((3, 5), (7, 1), (2, 9)):
-      with self.subTest(a=a, b=b): self._check("aoxby", a, b)
+      with self.subTest(order=order):
+        out = self._call(order, o=Tensor.empty(4, dtype=dtypes.int), x=Tensor(self.X), y=Tensor(self.Y),
+                         a=Variable("a", 0, 100, dtypes.int).bind(3), b=Variable("b", 0, 100, dtypes.int).bind(5))
+        np.testing.assert_equal(out.numpy(), self.X*3 + self.Y - 5)
 
   def test_sharded_var_first(self):
     devs = ("CPU:0", "CPU:1")

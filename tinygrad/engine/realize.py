@@ -13,8 +13,8 @@ from tinygrad.engine.worker import get_worker_pool, terminate_worker_pool
 
 # **************** Helpers ****************
 
-# scalar args are Variables, bound or read from var_vals. a PARAM slot is the position in the call args, scalars included
-def is_var_arg(s:UOp) -> bool: return s.is_bound_var or (s.op is Ops.PARAM and s.addrspace is AddrSpace.ALU)
+# scalar (ALU) args are Variables. a PARAM slot is the position in the call args, scalars included
+def is_var_arg(s:UOp) -> bool: return s.addrspace is AddrSpace.ALU
 def get_call_arg_uops(call:UOp) -> tuple[UOp, ...]: return tuple(s for s in call.src[1:] if not is_var_arg(s))
 def get_call_bufs(call:UOp) -> tuple[UOp, ...]: # the buffers a program reads and writes, in its signature order
   return tuple(call.src[1+g] for g in call.body.arg.globals) if call.body.op is Ops.PROGRAM else get_call_arg_uops(call)
