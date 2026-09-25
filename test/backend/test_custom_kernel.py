@@ -1,5 +1,5 @@
-import unittest
-from tinygrad import Tensor, UOp, GlobalCounters, Context, Device
+import unittest, itertools
+from tinygrad import Tensor, UOp, GlobalCounters, Context, Device, TinyJit, Variable
 import numpy as np
 from tinygrad.dtype import AddrSpace, dtypes, Invalid
 from tinygrad.schedule.rangeify import BufferizeOpts
@@ -10,7 +10,7 @@ from tinygrad.renderer import Target
 from tinygrad.renderer.ptx import PTXRenderer
 from tinygrad.renderer.llvmir import AMDLLVMRenderer
 from tinygrad.codegen import to_program
-from test.helpers import assert_kernel_count, KernelCountException
+from test.helpers import assert_kernel_count, KernelCountException, assert_jit_cache_len
 
 # **** kernels ****
 
@@ -612,6 +612,66 @@ class TestCustomKernel(unittest.TestCase):
     a = Tensor.custom_kernel(a.reshape(2, 2).T, fxn=custom_assign_row_max_kernel)[0]
     self.assertEqual(a.flatten().tolist(), [2, 2, 3, 3])
     self.assertEqual(a.shape, (2, 2))
+
+class TestCustomKernelArgOrder(unittest.TestCase):
+  # out = x*a + y - b: swapping any two of the args o/x/y/a/b gives a different answer
+  X, Y = np.arange(1, 5, dtype=np.int32), np.arange(10, 50, 10, dtype=np.int32)
+
+  def _call(self, order:str, **args) -> Tensor:
+    # order is a permutation of the arg names: o/x/y (and u, unused) are buffers, a/b are bound Variables
+    slot = {k:i for i,k in enumerate(order)}
+    def fxn(*ph):
+      o, x, y, a, b = [ph[slot[k]] for k in "oxyab"]
+      r = UOp.range(4, 0)
+      return o[r].store(x[r]*a + y[r] - b).end(r).sink(arg=KernelInfo(name=f"args_{order}"))
+    return Tensor(UOp.custom_kernel(*[v.uop if isinstance(v:=args[k], Tensor) else v for k in order], fxn=fxn)[slot["o"]])
+
+  def _check(self, order:str, a:int, b:int):
+    out = self._call(order, o=Tensor.empty(4, dtype=dtypes.int), x=Tensor(self.X), y=Tensor(self.Y), u=Tensor.full((4,), 99, dtype=dtypes.int),
+                     a=Variable("a", 0, 100, dtypes.int).bind(a), b=Variable("b", 0, 100, dtypes.int).bind(b))
+    np.testing.assert_equal(out.numpy(), self.X*a + self.Y - b)
+
+  def test_buffers_any_order(self):
+    for order in map("".join, itertools.permutations("oxy")):
+      with self.subTest(order=order):
+        slot = {k:i for i,k in enumerate(order)}
+        def fxn(*ph):
+          o, x, y = [ph[slot[k]] for k in "oxy"]
+          r = UOp.range(4, 0)
+          return o[r].store(x[r]*3 + y[r]).end(r).sink(arg=KernelInfo(name=f"bufs_{order}"))
+        args = {"o": Tensor.empty(4, dtype=dtypes.int), "x": Tensor(self.X), "y": Tensor(self.Y)}
+        np.testing.assert_equal(Tensor(UOp.custom_kernel(*[args[k].uop for k in order], fxn=fxn)[slot["o"]]).numpy(), self.X*3 + self.Y)
+
+  def test_buffers_and_vars_any_order(self):
+    for order in map("".join, itertools.permutations("oxyab")):
+      with self.subTest(order=order): self._check(order, 3, 5)
+
+  def test_unused_buffer(self):
+    for order in ("oxyabu", "uaoxby", "xaubyo"):
+      with self.subTest(order=order): self._check(order, 3, 5)
+
+  def test_rebind_values(self):
+    for a, b in ((3, 5), (7, 1), (2, 9)):
+      with self.subTest(a=a, b=b): self._check("aoxby", a, b)
+
+  def test_sharded_var_first(self):
+    devs = ("CPU:0", "CPU:1")
+    def fxn(a:UOp, x:UOp, o:UOp) -> UOp:
+      r = UOp.range(o.shape[0], 0)
+      return o[r].store(x[r]*a).end(r).sink(arg=KernelInfo(name="args_sharded"))
+    x = Tensor(np.arange(8, dtype=np.int32), device="CPU").shard(devs, axis=0)
+    o = Tensor.empty(8, dtype=dtypes.int, device="CPU").shard(devs, axis=0)
+    outs = UOp.custom_kernel(Variable("a", 0, 100, dtypes.int).bind(3), x.uop, o.uop, fxn=fxn)
+    np.testing.assert_equal(Tensor(outs[2]).numpy(), np.arange(8)*3)
+
+  def test_jit(self):
+    @TinyJit
+    def f(x:Tensor, y:Tensor, a:UOp, b:UOp) -> Tensor: return self._call("xaoby", o=Tensor.empty(4, dtype=dtypes.int), x=x, y=y, a=a, b=b).realize()
+    x, y = Tensor(self.X), Tensor(self.Y)
+    for a, b in ((2, 1), (3, 4), (5, 6), (7, 8)):
+      out = f(x, y, Variable("a", 0, 100, dtypes.int).bind(a), Variable("b", 0, 100, dtypes.int).bind(b))
+      with self.subTest(a=a, b=b): np.testing.assert_equal(out.numpy(), self.X*a + self.Y - b)
+    assert_jit_cache_len(f, 1)
 
 class TestCustomKernelInput(unittest.TestCase):
   def _test_mop(self, mop_fxn, max_kernels):
