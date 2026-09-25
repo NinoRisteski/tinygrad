@@ -9,7 +9,7 @@ from tinygrad.uop.ops import Ops, UOp, UPat, PatternMatcher, KernelInfo, GroupOp
 from tinygrad.dtype import dtypes, DTYPES_DICT, AddrSpace
 from tinygrad.renderer import Estimates
 from tinygrad.schedule.prepare import pm_mops
-from tinygrad.engine.realize import get_call_arg_uops, get_call_name, get_call_outs_ins, get_call_written_bufs
+from tinygrad.engine.realize import get_call_arg_uops, get_call_bufs, is_var_arg, get_call_name, get_call_outs_ins, get_call_written_bufs
 from tinygrad.engine.realize import estimate_uop, pm_flatten_linear, lower_and_compile, _resolve
 
 # *****************
@@ -112,7 +112,7 @@ def replace_buffer(ctx:tuple[bool, list[UOp], dict[UOp, int]], b:UOp) -> UOp:
   if slots.setdefault(b, len(bufs)) == len(bufs): bufs.append(b)
   param = UOp.param(slots[b], b.dtype, b.max_numel(), b.device)
   return param if use_rt else param.replace(tag="lt_input")
-pm_replace_buffers = PatternMatcher([(UPat(Ops.BUFFER, name="b"), replace_buffer)])
+pm_replace_buffers = PatternMatcher([(UPat(Ops.BUFFER, name="b"), lambda ctx,b: replace_buffer(ctx, b) if not b.is_variable else None)])
 
 # *****************
 # 1.1. prep: unwrap multi
@@ -120,7 +120,7 @@ pm_replace_buffers = PatternMatcher([(UPat(Ops.BUFFER, name="b"), replace_buffer
 def unwrap_call(call:UOp) -> UOp|None:
   if get_enqueue_devs(call) is None or (n:=max(len(to_tuple(a.device)) for a in get_call_arg_uops(call))) == 1: return None
   dnum = UOp.variable("_device_num", 0, n - 1, dtypes.int)
-  return UOp(Ops.LINEAR, src=tuple(call.replace(src=(call.body, *[a if a.is_bound_var else select_lane(a, i) for a in call.src[1:]], dnum.bind(i)))
+  return UOp(Ops.LINEAR, src=tuple(call.replace(src=(call.body, *[a if is_var_arg(a) else select_lane(a, i) for a in call.src[1:]], dnum.bind(i)))
                                    for i in range(n)))
 pm_unwrap_multi = PatternMatcher([(UPat(Ops.CALL, name="call"), unwrap_call)])
 
@@ -272,7 +272,8 @@ def _finalize_batch(ctx:BatchCtx, skip_wait:bool=False) -> UOp:
   estimates = [estimate_uop(c) for c, _, _ in ctx.batch]
   stamps = [tuple(2 * s + 1 for s in ctx.stamps(d, tag)) for tag, (_, d, _) in enumerate(ctx.batch)]
   profile_keys = [c.body.key if c.body.op is Ops.PROGRAM else None for c, _, _ in ctx.batch]
-  args = [[unwrap_lane(get_call_arg_uops(c)[g])[:2] for g in getattr(c.body.arg, "globals", (0, 1))] for c, _, _ in ctx.batch] # copy is dst, src
+  args = [[unwrap_lane(b)[:2] for b in (get_call_bufs(c) if c.body.op is Ops.PROGRAM else get_call_arg_uops(c)[:2])] # copy is dst, src
+          for c, _, _ in ctx.batch]
   bufs = [tuple(b.arg.slot for b, _ in a) if all(b.op is Ops.PARAM and lane is None for b, lane in a) else () for a in args]
   kerns = tuple(zip([d for _, d, _ in ctx.batch], names, estimates, stamps, profile_keys, bufs, [get_call_outs_ins(c) for c, _, _ in ctx.batch]))
   written_bufs = tuple(dedup(b for c, _, _ in ctx.batch for b in get_call_written_bufs(c)))

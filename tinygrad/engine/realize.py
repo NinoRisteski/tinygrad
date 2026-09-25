@@ -4,6 +4,7 @@ import decimal, array
 from dataclasses import dataclass, replace, field
 from tinygrad.helpers import colored, DEBUG, GlobalCounters, ansipad, prod, flatten, Context, to_tuple, tqdm, dedup
 from tinygrad.helpers import BEAM, size_to_str, time_to_str, VALIDATE_WITH_CPU, PROFILE, ProfilePointEvent, cpu_events, perf_counter_us, cpu_profile
+from tinygrad.dtype import AddrSpace
 from tinygrad.uop.ops import Ops, PatternMatcher, UOp, UPat, AxisType, sym_infer, graph_rewrite, ProgramInfo
 from tinygrad.device import Device, Buffer, MultiBuffer, ProfileGraphEntry
 from tinygrad.renderer import Estimates, Renderer
@@ -12,7 +13,11 @@ from tinygrad.engine.worker import get_worker_pool, terminate_worker_pool
 
 # **************** Helpers ****************
 
-def get_call_arg_uops(call:UOp) -> tuple[UOp, ...]: return tuple(s for s in call.src[1:] if not s.is_bound_var)
+# scalar args are Variables, bound (a value) or not (read from var_vals)
+def is_var_arg(s:UOp) -> bool: return s.is_bound_var or (s.op is Ops.PARAM and s.addrspace is AddrSpace.ALU)
+def get_call_arg_uops(call:UOp) -> tuple[UOp, ...]: return tuple(s for s in call.src[1:] if not is_var_arg(s))
+# a PARAM slot is the position in the call args, bound Variables included
+def get_call_bufs(call:UOp) -> list[UOp]: return [call.src[1+g] for g in call.body.arg.globals]
 def get_call_var_uops(call:UOp, prg:UOp) -> list[UOp]:
   bound = {s.src[0].expr: s.src[1].src[1] for s in call.src[1:] if s.is_bound_var}
   return [bound.get(v.expr, v) for v in prg.arg.vars]
@@ -20,7 +25,9 @@ def get_call_var_uops(call:UOp, prg:UOp) -> list[UOp]:
 def get_call_outs_ins(call:UOp) -> tuple[tuple[int, ...], tuple[int, ...]]:
   ast = call.body
   if isinstance(call.arg.aux, HCQInfo): return (), ()
-  if ast.op is Ops.PROGRAM: return tuple(ast.arg.outs), tuple(ast.arg.ins)
+  if ast.op is Ops.PROGRAM: # slots to positions in get_call_arg_uops
+    pos = [i for i,s in enumerate(call.src[1:]) if not is_var_arg(s)]
+    return tuple(pos.index(k) for k in ast.arg.outs), tuple(pos.index(k) for k in ast.arg.ins)
   if ast.op is Ops.STORE: return (0,), (1,)
   if ast.op is Ops.CUSTOM_FUNCTION and ast.arg == "encdec": return (0,), tuple(range(1, len(get_call_arg_uops(call))))
   return (), ()
@@ -72,7 +79,7 @@ def track_stats(ctx:ExecContext, call:UOp, st:decimal.Decimal, ets:list[float|No
 
   kernels = get_call_kernels(call) # everything below is the per kernel display: exec events for the profiler and DEBUG=2 lines
   args = [] if isinstance(call.arg.aux, HCQInfo) else resolve_params(call, ctx.input_uops)
-  lanes = list(unwrap_multi(call, [args[g] for g in call.body.arg.globals] if call.body.op is Ops.PROGRAM else args)) if args else []
+  lanes = list(unwrap_multi(call, resolve_call_bufs(call, ctx.input_uops) if call.body.op is Ops.PROGRAM else args)) if args else []
   for i, (device, kcall, stats) in enumerate(kernels):
     et = ets[i] if i < len(ets) else None
     bufs = lanes[i][0] if i < len(lanes) else [cast(Buffer, ctx.input_uops[s].buffer) for s in (stats[3] if stats else ())]
@@ -129,6 +136,7 @@ def _resolve(b:UOp, inputs:tuple[UOp, ...]) -> UOp:
   if b.op is Ops.MSTACK: return b.replace(src=tuple(_resolve(x, inputs) for x in b.src))
   return inputs[b.arg.slot] if b.op is Ops.PARAM else b
 def resolve_params(call:UOp, inputs:tuple[UOp, ...]) -> list[UOp]: return [_resolve(b, inputs) for b in get_call_arg_uops(call)]
+def resolve_call_bufs(call:UOp, inputs:tuple[UOp, ...]) -> list[UOp]: return [_resolve(b, inputs) for b in get_call_bufs(call)]
 
 def unwrap_multi(call:UOp, resolved:list[UOp]) -> Iterator[tuple[list[Buffer], dict[str, int]]]:
   bufs = [b.buffer for b in resolved]
@@ -158,8 +166,7 @@ def exec_copy(ctx:ExecContext, call:UOp, ast:UOp) -> list[float|None]:
 
 def exec_kernel(ctx:ExecContext, call:UOp, ast:UOp, devices=None) -> list[float|None]:
   ets:list[float|None] = []
-  resolved = resolve_params(call, ctx.input_uops)
-  for device, (bufs, device_vars) in zip(devices or to_tuple(call.src[1].device), unwrap_multi(call, [resolved[i] for i in ast.arg.globals])):
+  for device, (bufs, device_vars) in zip(devices or to_tuple(call.src[1].device), unwrap_multi(call, resolve_call_bufs(call, ctx.input_uops))):
     var_vals = {**ctx.var_vals, **device_vars}
     prg_bufs = [b.ensure_allocated() for b in bufs]
     rt = get_runtime(device, ast, cache=ctx.cache)

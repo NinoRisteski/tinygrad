@@ -23,7 +23,8 @@ def linearize(sink:UOp) -> list[UOp]:
     extra = None
     match u.op:
       # the order and placement of these defines is important
-      case Ops.PARAM: priority, extra = -20, u.arg.slot
+      # buffers then vars, the order of the kernel signature (TinyELF)
+      case Ops.PARAM: priority, extra = -20, (u.addrspace == AddrSpace.ALU, u.arg.slot)
       case Ops.BUFFER: priority = -17 if u.addrspace == AddrSpace.LOCAL else -18
       case Ops.LOAD: priority = -1    # place loads early
       case Ops.STORE: priority = 1    # place stores late

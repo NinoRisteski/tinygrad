@@ -1295,9 +1295,11 @@ class UOp(RandMixin, metaclass=UOpMetaClass):
   # one-line convenience for the single-output case: self is the value
   def call_with_output(self, *srcs:UOp, **kwargs) -> UOp: return UOp.call_with_outputs((self,), *srcs, **kwargs)[0]
   def custom_kernel(*srcs:UOp, fxn:Callable, grad_fxn:Callable|None=None) -> list[UOp]:
-    placeholders = [UOp.placeholder_like(s, slot=i) for i,s in enumerate(srcs)]
+    # bound Variables are passed by value: an ALU param in the kernel, nothing to wait on after it
+    placeholders = [UOp(Ops.PARAM, arg=replace(s.src[0].arg, slot=i)) if s.is_bound_var else UOp.placeholder_like(s, slot=i)
+                    for i,s in enumerate(srcs)]
     kernel = fxn(*placeholders).call(*srcs, grad_fxn=grad_fxn)
-    return [s.after(kernel) for s in srcs]
+    return [s if s.is_bound_var else s.after(kernel) for s in srcs]
 
   def to_elf(self) -> TinyELF:
     assert self.op is Ops.PROGRAM and isinstance(self.arg, ProgramInfo), "to_elf should only be called on a PROGRAM ast"

@@ -9,7 +9,7 @@ from tinygrad.runtime.support.memory import MMIOInterface, BumpAllocator
 from tinygrad.runtime.support.system import FileIOInterface
 from tinygrad.runtime.support.system import filter_visible_devices
 from tinygrad.uop.ops import Ops, UOp, UPat, PatternMatcher, KernelInfo
-from tinygrad.engine.realize import get_call_arg_uops, get_call_var_uops, lower_and_compile, run_linear
+from tinygrad.engine.realize import get_call_bufs, get_call_var_uops, lower_and_compile, run_linear
 from tinygrad.device import BufferStorage, Buffer, BufferSpec, Allocator, Compiled, Device, TinyELF
 from tinygrad.dtype import dtypes, DType
 from tinygrad.helpers import getenv, mv_address, round_up, data64, data64_le, prod, OSX, PROFILE, ContextVar, VIZ
@@ -173,7 +173,7 @@ class NVComputeQueue(NVQueue):
     qmd.set_program_addr(lib.getaddr(self.devs) + data.prog_off)
     for j, (off, _) in data.constbufs.items():
       qmd.set_constant_buf_addr(j, qmd_addr + UOp.const(self.qmd_sz, dtypes.uint64) if j == 0 else lib.getaddr(self.devs) + off)
-    bufs, vals = [get_call_arg_uops(call)[j] for j in prg.arg.globals], get_call_var_uops(call, prg)
+    bufs, vals = get_call_bufs(call), get_call_var_uops(call, prg)
     qmd.mv[self.qmd_sz:(at:=self.qmd_sz + len(data.cbuf_0) * 4)] = array.array('I', data.cbuf_0).tobytes() # constant buffer 0: the driver params
     qmd.patches |= dict(layout_args([b.getaddr(self.devs) for b in bufs] + [v.ccast(dt) for v, dt in zip(vals, data.vars)], at))
 
