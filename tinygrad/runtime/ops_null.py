@@ -5,7 +5,7 @@ from tinygrad.renderer.cstyle import CStyleLanguage
 from tinygrad.uop.ops import UOp, Ops, UPat, PatternMatcher
 from tinygrad.dtype import dtypes
 from tinygrad.helpers import getenv, dedup, prod, panic, cpu_events, perf_counter_us, NULL_ALLOW_COPYOUT, PROFILE
-from tinygrad.engine.realize import get_call_kernel_args
+from tinygrad.engine.realize import get_call_arg_uops, get_call_var_uops
 from tinygrad.runtime.support.hcq2 import HWQueue, encode_submit, layout_args, pack_args
 
 class NullRenderer(CStyleLanguage):
@@ -25,7 +25,7 @@ class NullQueue(HWQueue):
   def cmd(self, op, *args): self.q(*[a.getaddr(self.devs) if isinstance(a, UOp) else UOp.const(a, dtypes.uint64) for a in (op, *args, 0, 0, 0)][:4])
   def event(self, device:str, name:str, key:bytes|None=None) -> int: return null_events.setdefault((device, name, key), len(null_events))
   def exec(self, call:UOp, prg:UOp):
-    args = [a.getaddr(self.devs) if sig[4] else a.cast(dtypes.uint64) for a, sig in get_call_kernel_args(call, prg)]
+    args = [a.getaddr(self.devs) for a in get_call_arg_uops(call)] + [v.cast(dtypes.uint64) for v in get_call_var_uops(call, prg)]
     kernargs = UOp(Ops.LINEAR, src=tuple(pack_args(layout_args(args), 8 * max(len(args), 1))), arg="kernargs")
     self.cmd(EXEC, kernargs, len(args), self.event(self.devs[0], prg.src[0].arg.function_name, prg.key))
   def copy(self, dst:UOp, src:UOp, sz:int): self.cmd(COPY, dst, src, self.event(f"{src.device}:SDMA:0", f"{src.device} -> {dst.device}"))
