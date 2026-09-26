@@ -10,6 +10,8 @@ from tinygrad.renderer import Target
 from tinygrad.renderer.ptx import PTXRenderer
 from tinygrad.renderer.llvmir import AMDLLVMRenderer
 from tinygrad.codegen import to_program
+from tinygrad.device import TinyELF
+from tinygrad.renderer.isa.x86 import X86Renderer
 from test.helpers import assert_kernel_count, KernelCountException, assert_jit_cache_len
 
 # **** kernels ****
@@ -614,29 +616,52 @@ class TestCustomKernel(unittest.TestCase):
     self.assertEqual(a.shape, (2, 2))
 
 class TestCustomKernelArgOrder(unittest.TestCase):
-  # out = x*a + y - b: swapping any two of the args o/x/y/a/b gives a different answer
+  # out = x*a + y - b: swapping any two of the args o/x/y/a/b gives a different answer. outputs start at -999 so a kernel
+  # that doesn't write them can't pass on leftover memory, and inputs must come back unchanged
   X, Y = np.arange(1, 5, dtype=np.int32), np.arange(10, 50, 10, dtype=np.int32)
+  def _out(self, n=4, device=None) -> Tensor: return Tensor.full((n,), -999, dtype=dtypes.int, device=device).contiguous()
+  def _var(self, name:str, val:int) -> UOp: return Variable(name, 0, 100, dtypes.int).bind(val)
 
-  def _call(self, order:str, **args) -> Tensor:
+  def _call(self, order:str, **args) -> dict[str, Tensor]:
     # order is a permutation of the arg names: o/x/y are buffers, a/b are bound Variables
     slot = {k:i for i,k in enumerate(order)}
     def fxn(*ph):
       o, x, y, a, b = [ph[slot[k]] for k in "oxyab"]
       r = UOp.range(4, 0)
       return o[r].store(x[r]*a + y[r] - b).end(r).sink(arg=KernelInfo(name=f"args_{order}"))
-    return Tensor(UOp.custom_kernel(*[v.uop if isinstance(v:=args[k], Tensor) else v for k in order], fxn=fxn)[slot["o"]])
+    outs = UOp.custom_kernel(*[v.uop if isinstance(v:=args[k], Tensor) else v for k in order], fxn=fxn)
+    return {k:Tensor(u) for k,u in zip(order, outs) if isinstance(args[k], Tensor)}
 
-  def _run(self, order:str) -> np.ndarray:
-    return self._call(order, o=Tensor.empty(4, dtype=dtypes.int), x=Tensor(self.X), y=Tensor(self.Y),
-                      a=Variable("a", 0, 100, dtypes.int).bind(3), b=Variable("b", 0, 100, dtypes.int).bind(5)).numpy()
+  def _check(self, order:str):
+    t = self._call(order, o=self._out(), x=Tensor(self.X).realize(), y=Tensor(self.Y).realize(), a=self._var("a", 3), b=self._var("b", 5))
+    np.testing.assert_equal(t["o"].numpy(), self.X*3 + self.Y - 5)
+    np.testing.assert_equal(t["x"].numpy(), self.X)
+    np.testing.assert_equal(t["y"].numpy(), self.Y)
+
+  def test_signature(self):
+    # the contract every runtime packs its args by: buffers and values in the kernel's parameter order
+    def B(slot): return (None, slot, dtypes.int, (4,), True)
+    def V(slot): return ("v", slot, dtypes.int, (), False)
+    self.assertEqual([a for a,_ in TinyELF.runtime_args((B(0), V(1), B(2), V(3)), ("b0", "b2"), (5, 6))], ["b0", 5, "b2", 6])
+    # an image and its pointer are two params of one buffer
+    self.assertEqual([a for a,_ in TinyELF.runtime_args((B(0), B(0), V(1)), ("b0",), (7,))], ["b0", "b0", 7])
+    # buffers are 8 byte pointers in an arg block
+    self.assertEqual([o for o,_ in TinyELF.iter_sig((B(0), V(1), B(2)))], [0, 8, 16])
+    # x86 passes the args after the 6th on the stack and lowers those params away, the signature still has every one
+    bufs = [UOp.param(i, dtypes.int, (4,)) for i in range(8)]
+    r, v = UOp.range(4, 0), UOp.param(8, dtypes.int, (), name="v", addrspace=AddrSpace.ALU, vmin_vmax=(0, 10))
+    val = bufs[1][r]
+    for b in bufs[2:]: val = val + b[r]
+    prg = to_program(bufs[0][r].store(val*v).end(r).sink(arg=KernelInfo(name="args_x86")), X86Renderer(Target.parse("CPU:X86:x86_64")))
+    self.assertEqual([(x[1], x[4]) for x in prg.to_elf().signature], [(i, True) for i in range(8)] + [(8, False)])
 
   def test_buffers_and_vars_any_order(self):
     for order in map("".join, itertools.permutations("oxyab")):
-      with self.subTest(order=order): np.testing.assert_equal(self._run(order), self.X*3 + self.Y - 5)
+      with self.subTest(order=order): self._check(order)
 
   def test_beam(self):
-    # beam search times the program with its own call
-    with Context(BEAM=1, IGNORE_BEAM_CACHE=1): np.testing.assert_equal(self._run("aoxby"), self.X*3 + self.Y - 5)
+    # beam search times the program with its own call. its results are thrown away, so this only catches crashes there
+    with Context(BEAM=1, IGNORE_BEAM_CACHE=1): self._check("aoxby")
 
   @Context(DEV="CPU")
   def test_from_source_interleaved(self):
@@ -646,27 +671,31 @@ class TestCustomKernelArgOrder(unittest.TestCase):
     def fxn(out:UOp, a:UOp, inp:UOp) -> UOp:
       sink = UOp.sink(out, inp, a, arg=KernelInfo(name="k"))
       return UOp(Ops.PROGRAM, src=(sink, UOp(Ops.LINEAR, src=tuple(sink.toposort())), UOp(Ops.SOURCE, arg=src), UOp(Ops.BINARY, arg=binary)))
-    outs = UOp.custom_kernel(Tensor.empty(4, dtype=dtypes.int).uop, Variable("a", 0, 100, dtypes.int).bind(3), Tensor(self.X).uop, fxn=fxn)
+    outs = UOp.custom_kernel(self._out().uop, self._var("a", 3), Tensor(self.X).realize().uop, fxn=fxn)
     np.testing.assert_equal(Tensor(outs[0]).numpy(), self.X*3)
+    np.testing.assert_equal(Tensor(outs[2]).numpy(), self.X)
 
   def test_sharded_var_first(self):
     devs = ("CPU:0", "CPU:1")
     def fxn(a:UOp, x:UOp, o:UOp) -> UOp:
       r = UOp.range(o.shape[0], 0)
       return o[r].store(x[r]*a).end(r).sink(arg=KernelInfo(name="args_sharded"))
-    x = Tensor(np.arange(8, dtype=np.int32), device="CPU").shard(devs, axis=0)
-    o = Tensor.empty(8, dtype=dtypes.int, device="CPU").shard(devs, axis=0)
-    outs = UOp.custom_kernel(Variable("a", 0, 100, dtypes.int).bind(3), x.uop, o.uop, fxn=fxn)
+    x = Tensor(np.arange(8, dtype=np.int32), device="CPU").shard(devs, axis=0).realize()
+    outs = UOp.custom_kernel(self._var("a", 3), x.uop, self._out(8, "CPU").shard(devs, axis=0).uop, fxn=fxn)
     np.testing.assert_equal(Tensor(outs[2]).numpy(), np.arange(8)*3)
+    np.testing.assert_equal(Tensor(outs[1]).numpy(), np.arange(8))
 
   def test_jit(self):
     @TinyJit
-    def f(x:Tensor, y:Tensor, a:UOp, b:UOp) -> Tensor: return self._call("xaoby", o=Tensor.empty(4, dtype=dtypes.int), x=x, y=y, a=a, b=b).realize()
-    x, y = Tensor(self.X), Tensor(self.Y)
+    def f(o:Tensor, x:Tensor, y:Tensor, a:UOp, b:UOp) -> Tensor: return self._call("xaoby", o=o, x=x, y=y, a=a, b=b)["o"].realize()
+    x, y = Tensor(self.X).realize(), Tensor(self.Y).realize()
     for a, b in ((2, 1), (3, 4), (5, 6), (7, 8)):
-      out = f(x, y, Variable("a", 0, 100, dtypes.int).bind(a), Variable("b", 0, 100, dtypes.int).bind(b))
-      with self.subTest(a=a, b=b): np.testing.assert_equal(out.numpy(), self.X*a + self.Y - b)
+      # the kernel writes into o in place, jit replays hand back the captured tensor, so read o itself
+      f(o:=self._out().realize(), x, y, self._var("a", a), self._var("b", b))
+      with self.subTest(a=a, b=b): np.testing.assert_equal(o.numpy(), self.X*a + self.Y - b)
     assert_jit_cache_len(f, 1)
+    np.testing.assert_equal(x.numpy(), self.X)
+    np.testing.assert_equal(y.numpy(), self.Y)
 
 class TestCustomKernelInput(unittest.TestCase):
   def _test_mop(self, mop_fxn, max_kernels):
