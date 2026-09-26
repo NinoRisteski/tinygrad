@@ -1303,9 +1303,13 @@ class UOp(RandMixin, metaclass=UOpMetaClass):
 
   def to_elf(self) -> TinyELF:
     assert self.op is Ops.PROGRAM and isinstance(self.arg, ProgramInfo), "to_elf should only be called on a PROGRAM ast"
-    # the signature is in the kernel's parameter order (by slot), buffers and vars interleaved
-    params = sorted([u for u in self.src[1].src if u.op is Ops.PARAM and u.addrspace != AddrSpace.ALU] + list(self.arg.vars), key=lambda u:u.arg.slot)
-    sig = tuple((u.arg.name, u.arg.slot, u.dtype, u._shape, u.addrspace != AddrSpace.ALU) for u in params)
+    # the signature is in the kernel's parameter order (by slot), buffers and vars interleaved. a buffer can be more than one
+    # param (image and pointer). every global is a param, also when the program doesn't list it (asm, x86 lowers stack args away)
+    lin = [u for u in self.src[1].src if u.op is Ops.PARAM and u.addrspace != AddrSpace.ALU]
+    sig = [(u.arg.name, u.arg.slot, u.dtype, u._shape, True) for u in lin] + \
+          [(None, g, dtypes.void, (), True) for g in self.arg.globals if g not in {u.arg.slot for u in lin}] + \
+          [(v.arg.name, v.arg.slot, v.dtype, v._shape, False) for v in self.arg.vars]
+    sig = tuple(sorted(sig, key=lambda x: x[1]))
     return TinyELF(self.src[3].arg, self.src[0].arg.function_name, self.arg.target, sig, self.key)
 
 @dataclass(frozen=True)

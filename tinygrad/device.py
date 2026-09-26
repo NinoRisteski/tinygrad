@@ -396,9 +396,10 @@ class TinyELF:
 
   @staticmethod
   def runtime_args(signature:Sequence[KernelArg], bufs:Sequence[Any], vals:Sequence[Any]) -> list[tuple[Any, KernelArg]]:
-    # zip separately supplied buffers and values into the kernel's parameter order
-    bit, vit = iter(bufs), iter(vals)
-    return [(next(bit) if sig[4] else next(vit), sig) for sig in signature]
+    # put separately supplied buffers (one per buffer slot, in slot order) and values into the kernel's parameter order.
+    # a buffer can be more than one param (an image and its pointer share a slot)
+    bslots, vit = sorted({sig[1] for sig in signature if sig[4]}), iter(vals)
+    return [(bufs[bslots.index(sig[1])] if sig[4] else next(vit), sig) for sig in signature]
 
   @staticmethod
   def iter_sig(signature:Sequence[KernelArg], offset:int=0) -> Generator[tuple[int, DType], None, None]:
