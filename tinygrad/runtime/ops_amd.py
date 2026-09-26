@@ -25,7 +25,7 @@ from tinygrad.runtime.support.usb import USB3, pm_usb_batch, pm_usb_lower, pm_us
 from tinygrad.runtime.support.memory import AddrSpace
 if getenv("IOCTL"): import extra.hip_gpu_driver.hip_ioctl  # noqa: F401 # pylint: disable=unused-import
 
-from tinygrad.engine.realize import get_call_bufs, get_call_var_uops
+from tinygrad.engine.realize import get_call_kernel_args
 from tinygrad.uop.ops import Ops, UPat, PatternMatcher
 
 SQTT = ContextVar("SQTT", abs(VIZ.value)>=2)
@@ -359,8 +359,8 @@ class AMDComputeQueue(HWQueue):
   ### exec
 
   def kernargs(self, call:UOp, prg:UOp, data:AMDProgramData) -> list[UOp]:
-    args = [b.getaddr(self.devs) for b in get_call_bufs(call)] + \
-            [b.ccast(v.dtype) for v, b in zip(prg.arg.vars, get_call_var_uops(call, prg))] # a bound value is a bare const, the var has the width
+    # a bound value is a bare const, the var has the width
+    args = [a.getaddr(self.devs) if sig[4] else a.ccast(sig[2]) for a, sig in get_call_kernel_args(call, prg)]
     return pack_args(layout_args(args), data.kernargs_segment_size) + (dispatch_packet(data, prg.arg) if data.enable_dispatch_ptr else [])
 
   def exec(self, call:UOp, prg:UOp):

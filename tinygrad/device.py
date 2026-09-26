@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, replace, field
 from collections import defaultdict
-from typing import Any, Callable, Generic, TypeVar, Iterator, Generator, Self, TYPE_CHECKING
+from typing import Any, Callable, Generic, TypeVar, Iterator, Generator, Self, Sequence, TYPE_CHECKING
 import importlib, inspect, functools, pathlib, os, contextlib, re, atexit, pickle, decimal, subprocess, struct, mmap, time, statistics
 from tinygrad.helpers import mv_address, LRU, getenv, diskcache_get, diskcache_put, DEBUG, GlobalCounters, PROFILE, temp, colored
 from tinygrad.helpers import Context, CCACHE, ALLOW_DEVICE_USAGE, MAX_BUFFER_SIZE, cpu_events, ProfileEvent, ProfilePointEvent, suppress_finalizing
@@ -384,20 +384,27 @@ class Compiler:
     raise CompileError("Compilation Error")
 
 
+KernelArg = tuple[str|None, int, DType, tuple, bool] # name, slot, dtype, shape, is_buffer
+
 @dataclass
 class TinyELF:
   lib: bytes
   name: str
   target: Target
-  # tuple of (name, slot, dtype, shape)
-  signature: tuple[tuple[str|None, int, DType, tuple], ...]
+  signature: tuple[KernelArg, ...] # in the kernel's parameter order, buffers and values interleaved
   profile_key: bytes|None = None
 
   @staticmethod
-  def iter_sig(signature:tuple[tuple[str|None, int, DType, tuple], ...], offset:int=0) -> Generator[tuple[int, DType], None, None]:
-    for _,_,dt,_ in signature:
-      yield (offset:=round_up(offset, dt.itemsize)), dt
-      offset += dt.itemsize
+  def runtime_args(signature:Sequence[KernelArg], bufs:Sequence[Any], vals:Sequence[Any]) -> list[tuple[Any, KernelArg]]:
+    # zip separately supplied buffers and values into the kernel's parameter order
+    bit, vit = iter(bufs), iter(vals)
+    return [(next(bit) if sig[4] else next(vit), sig) for sig in signature]
+
+  @staticmethod
+  def iter_sig(signature:Sequence[KernelArg], offset:int=0) -> Generator[tuple[int, DType], None, None]:
+    for _,_,dt,_,is_buffer in signature:
+      yield (offset:=round_up(offset, sz:=8 if is_buffer else dt.itemsize)), dt
+      offset += sz
 
 class Program(Generic[DeviceType]):
   def __init__(self, dev:DeviceType, obj:TinyELF): pass

@@ -4,7 +4,7 @@ from tinygrad.helpers import DEBUG, DEV, getenv, unwrap
 from tinygrad.device import Buffer, BufferStorage, BufferSpec, Allocator, Compiled, MMIOInterface, HCQ_RUNTIME_DEV
 from tinygrad.dtype import dtypes
 from tinygrad.uop.ops import Ops, UOp, UPat, PatternMatcher
-from tinygrad.engine.realize import get_call_bufs, get_call_var_uops
+from tinygrad.engine.realize import get_call_kernel_args
 from tinygrad.renderer.cstyle import CUDARenderer, NVCCRenderer
 from tinygrad.renderer.ptx import PTXRenderer
 from tinygrad.runtime.autogen import cuda
@@ -47,9 +47,9 @@ class CUDAQueue(HWQueue):
     self.h = ccall(cuda.cuLaunchKernel, func, *global_size, *local_size, 0, self.stream, UOp.const(0, dtypes.uint64), self.kernargs.index(extra))
 
   def exec(self, call:UOp, prg:UOp):
-    obj, bufs, vals = prg.to_elf(), get_call_bufs(call), get_call_var_uops(call, prg)
+    obj = prg.to_elf()
     self.launch(self.extern(("function", obj.lib, obj.name)), prg.arg.global_size, prg.arg.local_size,
-                [b.getaddr(self.devs) for b in bufs] + [v.ccast(var.dtype) for v, var in zip(vals, prg.arg.vars)])
+                [a.getaddr(self.devs) if sig[4] else a.ccast(sig[2]) for a, sig in get_call_kernel_args(call, prg)])
 
   def copy(self, dst:UOp, src:UOp, sz:int):
     self.h = ccall(cuda.cuMemcpyAsync, dst.getaddr(self.devs), src.getaddr(self.devs), UOp.const(sz, dtypes.uint64), self.stream)

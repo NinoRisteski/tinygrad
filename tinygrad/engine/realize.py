@@ -6,7 +6,7 @@ from tinygrad.helpers import colored, DEBUG, GlobalCounters, ansipad, prod, flat
 from tinygrad.helpers import BEAM, size_to_str, time_to_str, VALIDATE_WITH_CPU, PROFILE, ProfilePointEvent, cpu_events, perf_counter_us, cpu_profile
 from tinygrad.dtype import AddrSpace
 from tinygrad.uop.ops import Ops, PatternMatcher, UOp, UPat, AxisType, sym_infer, graph_rewrite, ProgramInfo
-from tinygrad.device import Device, Buffer, MultiBuffer, ProfileGraphEntry
+from tinygrad.device import Device, Buffer, MultiBuffer, ProfileGraphEntry, TinyELF, KernelArg
 from tinygrad.renderer import Estimates, Renderer
 from tinygrad.codegen import to_program, to_program_cache, to_program_key, to_program_context
 from tinygrad.engine.worker import get_worker_pool, terminate_worker_pool
@@ -19,6 +19,8 @@ def get_call_arg_uops(call:UOp) -> tuple[UOp, ...]: return tuple(s for s in call
 def get_call_bufs(call:UOp) -> tuple[UOp, ...]: # the buffers a program reads and writes, in its signature order
   return tuple(call.src[1+g] for g in call.body.arg.globals) if call.body.op is Ops.PROGRAM else get_call_arg_uops(call)
 def get_call_device(call:UOp): return get_call_arg_uops(call)[0].device
+def get_call_kernel_args(call:UOp, prg:UOp) -> list[tuple[UOp, KernelArg]]: # buffers and values in the kernel's parameter order
+  return TinyELF.runtime_args(prg.to_elf().signature, get_call_bufs(call), get_call_var_uops(call, prg))
 def get_call_var_uops(call:UOp, prg:UOp) -> list[UOp]:
   bound = {s.src[0].expr: s.src[1].src[1] for s in call.src[1:] if s.is_bound_var}
   return [bound.get(v.expr, v) for v in prg.arg.vars]

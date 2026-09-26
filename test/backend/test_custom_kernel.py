@@ -626,12 +626,28 @@ class TestCustomKernelArgOrder(unittest.TestCase):
       return o[r].store(x[r]*a + y[r] - b).end(r).sink(arg=KernelInfo(name=f"args_{order}"))
     return Tensor(UOp.custom_kernel(*[v.uop if isinstance(v:=args[k], Tensor) else v for k in order], fxn=fxn)[slot["o"]])
 
+  def _run(self, order:str) -> np.ndarray:
+    return self._call(order, o=Tensor.empty(4, dtype=dtypes.int), x=Tensor(self.X), y=Tensor(self.Y),
+                      a=Variable("a", 0, 100, dtypes.int).bind(3), b=Variable("b", 0, 100, dtypes.int).bind(5)).numpy()
+
   def test_buffers_and_vars_any_order(self):
     for order in map("".join, itertools.permutations("oxyab")):
-      with self.subTest(order=order):
-        out = self._call(order, o=Tensor.empty(4, dtype=dtypes.int), x=Tensor(self.X), y=Tensor(self.Y),
-                         a=Variable("a", 0, 100, dtypes.int).bind(3), b=Variable("b", 0, 100, dtypes.int).bind(5))
-        np.testing.assert_equal(out.numpy(), self.X*3 + self.Y - 5)
+      with self.subTest(order=order): np.testing.assert_equal(self._run(order), self.X*3 + self.Y - 5)
+
+  def test_beam(self):
+    # beam search times the program with its own call
+    with Context(BEAM=1, IGNORE_BEAM_CACHE=1): np.testing.assert_equal(self._run("aoxby"), self.X*3 + self.Y - 5)
+
+  @Context(DEV="CPU")
+  def test_from_source_interleaved(self):
+    # a hand written kernel declares its own parameter order, the runtime must follow it
+    src = "void k(int* restrict out, const int a, int* restrict inp) { for (int i = 0; i < 4; i++) out[i] = inp[i] * a; }"
+    binary = Device["CPU"].renderer.compiler.compile(src)
+    def fxn(out:UOp, a:UOp, inp:UOp) -> UOp:
+      sink = UOp.sink(out, inp, a, arg=KernelInfo(name="k"))
+      return UOp(Ops.PROGRAM, src=(sink, UOp(Ops.LINEAR, src=tuple(sink.toposort())), UOp(Ops.SOURCE, arg=src), UOp(Ops.BINARY, arg=binary)))
+    outs = UOp.custom_kernel(Tensor.empty(4, dtype=dtypes.int).uop, Variable("a", 0, 100, dtypes.int).bind(3), Tensor(self.X).uop, fxn=fxn)
+    np.testing.assert_equal(Tensor(outs[0]).numpy(), self.X*3)
 
   def test_sharded_var_first(self):
     devs = ("CPU:0", "CPU:1")
