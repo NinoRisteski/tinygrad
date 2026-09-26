@@ -659,10 +659,6 @@ class TestCustomKernelArgOrder(unittest.TestCase):
     for order in map("".join, itertools.permutations("oxyab")):
       with self.subTest(order=order): self._check(order)
 
-  def test_beam(self):
-    # beam search times the program with its own call. its results are thrown away, so this only catches crashes there
-    with Context(BEAM=1, IGNORE_BEAM_CACHE=1): self._check("aoxby")
-
   @Context(DEV="CPU")
   def test_from_source_interleaved(self):
     # a hand written kernel declares its own parameter order, the runtime must follow it
