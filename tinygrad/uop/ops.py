@@ -1309,8 +1309,7 @@ class UOp(RandMixin, metaclass=UOpMetaClass):
     sig = [(u.arg.name, u.arg.slot, u.dtype, u._shape, True) for u in lin] + \
           [(None, g, dtypes.void, (), True) for g in self.arg.globals if g not in {u.arg.slot for u in lin}] + \
           [(v.arg.name, v.arg.slot, v.dtype, v._shape, False) for v in self.arg.vars]
-    sig = tuple(sorted(sig, key=lambda x: x[1]))
-    return TinyELF(self.src[3].arg, self.src[0].arg.function_name, self.arg.target, sig, self.key)
+    return TinyELF(self.src[3].arg, self.src[0].arg.function_name, self.arg.target, tuple(sorted(sig, key=lambda x: x[1])), self.key)
 
 @dataclass(frozen=True)
 class KernelInfo:
