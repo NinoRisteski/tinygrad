@@ -2,6 +2,7 @@ from __future__ import annotations
 import platform, sys, ctypes, mmap, struct
 from typing import cast, Any
 from tinygrad.helpers import OSX, WIN, mv_address, suppress_finalizing, unwrap, data64_le, cpu_profile
+from tinygrad.dtype import dtypes
 from tinygrad.device import Compiled, TinyELF, Program, HostAllocator
 from tinygrad.runtime.support.c import DLL
 from tinygrad.renderer.cstyle import ClangRenderer
@@ -57,7 +58,7 @@ class CPUProgram(Program['CPUDevice']):
 
   def __call__(self, *bufs:int, global_size:tuple[int,int,int]=(1,1,1), local_size:tuple[int,int,int]=(1,1,1),
                vals:tuple[int|None, ...]=(), wait:bool=False, timeout:int|None=None) -> float|None:
-    args = [*bufs, *cast(tuple[int, ...], vals)]
+    args = TinyELF.reorder_args(self.signature, [*bufs, *cast(tuple[int, ...], vals)])
     if (remote:=self.dev.remote) is not None:
       data = struct.pack(f'<{len(args)}Q', *(a & 0xffffffffffffffff for a in args))
       ret = (remote._rpc if wait else remote._post)(remote.sock, RemoteCmd.EXEC_PROG, self.fxn, len(args), int(wait), payload=data)
@@ -66,8 +67,9 @@ class CPUProgram(Program['CPUDevice']):
       if self.lvp:
         lvp_args = bytearray(12 + (len(bufs) + len(vals)) * 8)
         addr = mv_address(lvp_args)
-        struct.pack_into(f'<3I{len(bufs)}Q', lvp_args, 0, *data64_le(addr+12), (len(bufs)+len(vals))*2, *bufs)
-        for v,(off,dt) in zip(vals, TinyELF.iter_sig(self.signature[-len(vals):], len(bufs)*8)): struct.pack_into(f'<{dt.fmt}', lvp_args, 12+off, v)
+        struct.pack_into('<3I', lvp_args, 0, *data64_le(addr+12), len(args)*2)
+        signature = tuple((name, slot, dtypes.uint64 if slot < len(bufs) else dt, shape) for name,slot,dt,shape in self.signature)
+        for arg,(off,dt) in zip(args, TinyELF.iter_sig(signature)): struct.pack_into(f'<{dt.fmt}', lvp_args, 12+off, arg)
         self.fxn(addr)
       else: self.fxn(*[ctypes.c_uint64(x) for x in args])
     return float(unwrap(prof.en) - prof.st) * 1e-6 if wait else None

@@ -10,6 +10,14 @@ from tinygrad.schedule import transform_to_call, resolve_linear_call
 def sched_key(t:Tensor): return transform_to_call(UOp.sink(t.uop)).body.key
 
 class TestCall(unittest.TestCase):
+  def test_isa_parameter_signature(self):
+    from tinygrad.renderer.isa.x86 import X86Renderer
+    params = [UOp.param(i, dtypes.int32, (), name=f'v{i}', vmin_vmax=(0, 10), addrspace=AddrSpace.ALU) if i % 2 == 0 else
+              UOp.param(i, dtypes.int32, (1,)) for i in range(8)]
+    value = sum(p if p.addrspace == AddrSpace.ALU else p.index(0).load() for p in params[:-1])
+    prg = to_program(params[-1].index(0).store(value).sink(arg=KernelInfo()), X86Renderer(Target("CPU", arch="x86_64")))
+    self.assertEqual([s[1] for s in prg.to_elf().signature], [4, 0, 5, 1, 6, 2, 7, 3])
+
   def test_call_scalar_param_shape_mismatch(self):
     scalar_fxn = UOp.param(0, dtypes.float, ()) * 2
     with self.assertRaisesRegex(TypeError, "shape mismatch: expected scalar"):

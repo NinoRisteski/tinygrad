@@ -350,6 +350,8 @@ class Compiler:
     raise CompileError("Compilation Error")
 
 
+ArgType = TypeVar('ArgType')
+
 @dataclass
 class TinyELF:
   lib: bytes
@@ -358,6 +360,10 @@ class TinyELF:
   # tuple of (name, slot, dtype, shape)
   signature: tuple[tuple[str|None, int, DType, tuple], ...]
   profile_key: bytes|None = None
+
+  @staticmethod
+  def reorder_args(signature:tuple[tuple[str|None, int, DType, tuple], ...], args:list[ArgType]) -> list[ArgType]:
+    return [args[slot] for _,slot,_,_ in signature]
 
   @staticmethod
   def iter_sig(signature:tuple[tuple[str|None, int, DType, tuple], ...], offset:int=0) -> Generator[tuple[int, DType], None, None]:

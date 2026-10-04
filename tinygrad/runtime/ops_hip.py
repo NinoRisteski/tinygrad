@@ -1,6 +1,7 @@
 import ctypes
 from tinygrad.helpers import mv_address, getenv, suppress_finalizing
 from tinygrad.device import BufferStorage, Compiled, Allocator, BufferSpec, Program, TinyELF
+from tinygrad.dtype import dtypes
 from tinygrad.runtime.autogen import hip
 from tinygrad.renderer.cstyle import HIPRenderer
 from tinygrad.runtime.support.c import init_c_var, init_c_struct_t
@@ -37,14 +38,14 @@ class HIPProgram(Program[HIPDevice]):
   def __call__(self, *args, global_size:tuple[int,int,int]=(1,1,1), local_size:tuple[int,int,int]=(1,1,1), vals:tuple[int, ...]=(), wait=False, **kw):
     check(hip.hipSetDevice(self.dev.device_id))
     if not hasattr(self, "vargs"):
-      fields = ([(f'f{i}', hip.hipDeviceptr_t, i*8) for i in range(len(args))] +
-        [(f'v{i}', getattr(ctypes, f"c_int{dt.bitsize}"), o) for i,(o,dt) in enumerate(TinyELF.iter_sig(self.signature[len(args):], len(args)*8))])
-      self.c_args = init_c_struct_t(fields[-1][2] + ctypes.sizeof(fields[-1][1]) if len(fields) else 0, tuple(fields))(*args, *vals)
+      signature = tuple((name, slot, dtypes.uint64 if slot < len(args) else dt, shape) for name,slot,dt,shape in self.signature)
+      fields = [(f'f{i}', hip.hipDeviceptr_t if slot < len(args) else getattr(ctypes, f"c_int{dt.bitsize}"), off)
+                for i, ((_,slot,_,_), (off,dt)) in enumerate(zip(signature, TinyELF.iter_sig(signature)))]
+      self.c_args = init_c_struct_t(fields[-1][2] + ctypes.sizeof(fields[-1][1]) if len(fields) else 0, tuple(fields))()
       self.vargs = (ctypes.c_void_p * 5)(1, ctypes.cast(ctypes.byref(self.c_args), ctypes.c_void_p), 2,
                                          ctypes.cast(ctypes.pointer(ctypes.c_size_t(ctypes.sizeof(self.c_args))), ctypes.c_void_p), 3)
 
-    for i in range(len(args)): self.c_args.__setattr__(f'f{i}', args[i])
-    for i in range(len(vals)): self.c_args.__setattr__(f'v{i}', vals[i])
+    for i,arg in enumerate(TinyELF.reorder_args(self.signature, [*args, *vals])): self.c_args.__setattr__(f'f{i}', arg)
 
     if wait: check(hip.hipEventRecord(self.dev.time_event_st, None))
 

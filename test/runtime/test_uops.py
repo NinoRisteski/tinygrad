@@ -7,7 +7,7 @@ from tinygrad.dtype import dtypes, DType, AddrSpace, ConstFloat  # noqa: F401
 from tinygrad.device import Buffer, Device
 from tinygrad.uop.ops import Ops, UOp, KernelInfo, AxisType
 from tinygrad.renderer.cstyle import CStyleLanguage
-from tinygrad.engine.realize import run_linear
+from tinygrad.engine.realize import run_linear, compile_linear, link_linear
 from tinygrad.renderer.ptx import PTXRenderer
 from tinygrad.runtime.ops_python import PythonRenderer
 
@@ -222,6 +222,44 @@ class TestZeroRange(unittest.TestCase):
       self.assertEqual(out.item(), i)
 
 class TestUOpPrograms(unittest.TestCase):
+  def test_mixed_parameter_order(self):
+    for order in ('BBVV', 'BVBV', 'BVVB', 'VBBV', 'VBVB', 'VVBB'):
+      with self.subTest(order=order): self._test_parameter_order(order)
+
+  def test_mixed_parameter_widths(self):
+    if dtypes.int64 not in Device[Device.DEFAULT].renderer.supported_dtypes(): self.skipTest("requires 64-bit ints")
+    for order in ('BVBV', 'VBVB', 'VVBB'):
+      with self.subTest(order=order): self._test_parameter_order(order, dtypes.int64)
+
+  def _test_parameter_order(self, order, scalar_dtype=dtypes.int):
+    from tinygrad.codegen import to_program
+    dev = Device[Device.DEFAULT]
+    params = [UOp.param(i, dtypes.int, (1,), dev.device) if kind == 'B' else
+              UOp.param(i, scalar_dtype if i == order.index('V') else dtypes.int, (), name=f'v{i}',
+                        vmin_vmax=(-10, 10), addrspace=AddrSpace.ALU) for i,kind in enumerate(order)]
+    out, inp = [p for p in params if p.addrspace == AddrSpace.GLOBAL]
+    mul, add = [p for p in params if p.addrspace == AddrSpace.ALU]
+    value = (inp.index(0).load().cast(scalar_dtype)*mul+add.cast(scalar_dtype)).cast(dtypes.int)
+    prg = to_program(out.index(0).store(value).sink(arg=KernelInfo()), dev.renderer)
+    self.assertEqual([s[1] for s in prg.to_elf().signature], [(out, inp, mul, add).index(p) for p in params])
+    dst = Buffer(dev.device, 1, dtypes.int).allocate()
+    src = Buffer(dev.device, 1, dtypes.int, initial_value=np.array([10], dtype=np.int32).tobytes())
+    # CALL slots stay positional: scalar-only slots are unused buffer arguments here.
+    call_args = [UOp.from_buffer(src if p is inp else dst) for p in params]
+    inputs:list[UOp] = []
+    linear = link_linear(compile_linear(UOp(Ops.LINEAR, src=(prg.call(*call_args),)), input_uops=inputs), input_uops=inputs)
+    for m,a in ((3, 4), (-5, -2)):
+      run_linear(linear, var_vals={mul.expr: m, add.expr: a}, input_uops=inputs, jit=True, wait=True)
+      self.assertEqual(dst.numpy().tolist(), [10*m+a])
+
+  def test_sparse_call_parameters(self):
+    dev = Device[Device.DEFAULT]
+    out, inp = [UOp.param(i, dtypes.int, (1,), dev.device) for i in (0, 2)]
+    dst = Buffer(dev.device, 1, dtypes.int).allocate()
+    unused, src = [Buffer(dev.device, 1, dtypes.int, initial_value=np.array([v], dtype=np.int32).tobytes()) for v in (10, 21)]
+    run_uops([out.index(0).store(inp.index(0).load())], [dst, unused, src])
+    self.assertEqual(dst.numpy().tolist(), [21])
+
   def _run(self, prog:UOp, *tensors:Tensor):
     run_linear(UOp(Ops.LINEAR, src=(prog.call(*[t.realize().uop.buf_uop for t in tensors]),)), update_stats=False)
 
