@@ -150,6 +150,14 @@ class TestOptim(unittest.TestCase):
     self._test_adam(1, {'lr': 1e10}, 1e-4, 1e-4)
     self._test_adamw(1, {'lr': 1e10}, 1e-4, 1e-4)
 
+  @unittest.skipUnless(dtypes.half in Device[Device.DEFAULT].renderer.supported_dtypes(), "need half")
+  def test_adam_half_small_gradient(self):
+    t = Tensor.zeros((), dtype=dtypes.half)
+    optimizer = Adam([t])
+    (t * 0.0001).backward()
+    optimizer.step()
+    self.assertAlmostEqual(t.item(), -0.001, delta=1e-6)
+
   def test_assert_tensor_train(self):
     t = Tensor.ones((1,1))
     optimizer = Adam([t])
