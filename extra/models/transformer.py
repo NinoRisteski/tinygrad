@@ -48,7 +48,7 @@ class Transformer:
   def forward(self, x):
     bs = x.shape[0]
 
-    maxlen_eye = Tensor.eye(x.shape[1])
+    maxlen_eye = Tensor.eye(self.maxlen)[:x.shape[1]]
     maxlen_eye = maxlen_eye.unsqueeze(0).expand([bs, *maxlen_eye.shape])
 
     onehot_feat = x.int().one_hot(self.syms)
