@@ -1,6 +1,6 @@
 import unittest, time
 import numpy as np
-from tinygrad import Device
+from tinygrad import Device, Tensor
 from tinygrad.nn.state import get_parameters
 from tinygrad.nn import optim
 from tinygrad.helpers import getenv
@@ -54,6 +54,10 @@ class TestTrain(unittest.TestCase):
     Y = np.zeros((BS,), dtype=np.int32)
     train_one_step(model,X,Y)
     check_gc()
+
+  def test_transformer_short_sequence(self):
+    model = Transformer(syms=10, maxlen=6, layers=0, embed_dim=4, num_heads=1, ff_dim=4)
+    self.assertEqual(model.forward(Tensor.empty(1, 4)).shape, (1, 4, 10))
 
   @slow
   def test_transformer(self):
