@@ -6,14 +6,19 @@ from tinygrad.mixin.movement import MovementMixin
 from tinygrad.mixin.reduce import ReduceMixin
 from tinygrad.uop import Ops, GroupOp
 from tinygrad.uop.ops import _broadcast_shape, resolve, smax, smin, identity_element, to_max_shape
-from tinygrad.dtype import ConstType, DType, DTypeLike, Invalid, PyConst, dtypes, least_upper_dtype, sum_acc_dtype, to_dtype, commit_int
+from tinygrad.dtype import ConstType, DType, DTypeLike, Invalid, PyConst, dtypes, least_upper_dtype, least_upper_float, sum_acc_dtype, to_dtype, commit_int
 from tinygrad.helpers import all_int, argfix, ceildiv, flatten, flat_to_grouped, fully_flatten, get_shape, make_tuple, merge_dicts, prod
 from tinygrad.helpers import resolve_pool_pads, round_up, IMAGE, FLOAT16, WINO
 
 if TYPE_CHECKING:
-  from tinygrad.uop.ops import sint
+  from tinygrad.uop.ops import UOp, sint
 
 ReductionStr = Literal["mean", "sum", "none"]
+
+def _binary_crossentropy_backward(grad:UOp, call:UOp) -> tuple[UOp, UOp]:
+  p, target = call.src[1:3]
+  q = 1-p
+  return grad * (p-target) / (p*q).maximum(1e-12), grad * (q.log() - p.log())
 
 
 class OpMixin(ElementwiseMixin, ReduceMixin):
@@ -1738,7 +1743,13 @@ class OpMixin(ElementwiseMixin, ReduceMixin):
     print(t.binary_crossentropy(Y).item())
     ```
     """
-    return (-Y*self.log() - (1-Y)*(1-self).log())._do_reduction(reduction)
+    loss_dtype = least_upper_dtype(least_upper_float(self.dtype), Y.dtype)
+    compute_dtype = least_upper_dtype(loss_dtype, dtypes.float32)
+    x, y = (t.cast(compute_dtype)._uop for t in (self, Y))
+    p, target = x.param_like(0), y.param_like(1)
+    loss = -target*p.log().maximum(-100) - (1-target)*(1-p).log().maximum(-100)
+    loss = self._wrap_uop(loss.call_with_output(x, y, grad_fxn=_binary_crossentropy_backward))
+    return loss.cast(loss_dtype)._do_reduction(reduction)
 
   def binary_crossentropy_logits(self, Y:Self, reduction:ReductionStr="mean", pos_weight:Self|None=None) -> Self:
     """
